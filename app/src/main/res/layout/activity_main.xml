@@ -7,6 +7,12 @@
     android:padding="24dp"
     android:gravity="center">
 
+    <com.example.pressurecookercounter.WaveformView
+        android:id="@+id/waveformView"
+        android:layout_width="match_parent"
+        android:layout_height="150dp"
+        android:layout_marginBottom="16dp" />
+
     <TextView
         android:id="@+id/whistleCountText"
         android:layout_width="wrap_content"

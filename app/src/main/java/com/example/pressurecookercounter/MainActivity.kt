@@ -11,9 +11,12 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import kotlin.math.abs
+import android.util.Log
+
 
 class MainActivity : AppCompatActivity() {
 
+    private lateinit var waveformView: WaveformView
     private lateinit var countText: TextView
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
@@ -24,13 +27,14 @@ class MainActivity : AppCompatActivity() {
     private var lastWhistleTime = 0L
 
     private val SAMPLE_RATE = 44100
-    private val THRESHOLD = 15000 // Adjust after testing
+    private val THRESHOLD = 30000 // Adjust after testing
     private val MIN_GAP_MS = 3000L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        waveformView = findViewById(R.id.waveformView)
         countText = findViewById(R.id.whistleCountText)
         startButton = findViewById(R.id.startButton)
         stopButton = findViewById(R.id.stopButton)
@@ -74,7 +78,11 @@ class MainActivity : AppCompatActivity() {
                 val read = recorder.read(buffer, 0, buffer.size)
                 if (read > 0) {
                     val max = buffer.take(read).maxOf { abs(it.toInt()) }
+                    Log.d("Amplitude", "Amp: $max")
                     checkWhistle(max)
+                    runOnUiThread {
+                        waveformView.addAmplitude(max)
+                    }
                 }
             }
 
