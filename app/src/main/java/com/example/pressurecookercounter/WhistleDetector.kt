@@ -1,25 +1,37 @@
 package com.example.pressurecookercounter
 
-import org.jtransforms.fft.FloatFFT_1D
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
-import kotlin.math.sqrt
 
 class WhistleDetector(
     private val sampleRate: Int,
     private val bufferSize: Int,
     private val minFrequency: Float = 2000f, // Typical pressure cooker whistle ranges
     private val maxFrequency: Float = 4000f,
-    private val sensitivityThreshold: Float = 0.6f // 0.0 to 1.0
+    private var sensitivityThreshold: Float = 0.6f // 0.0 to 1.0
 ) {
-    private val fft = FloatFFT_1D(bufferSize.toLong())
     private var lastDetectionTime = 0L
     private val detectionCooldown = 2000L // 2 seconds between detections
+    private var threshold = 2000 // Default threshold for audio energy
+
+    // Interface for whistle detection callbacks
+    interface WhistleDetectionListener {
+        fun onWhistleDetected()
+    }
+
+    private var listener: WhistleDetectionListener? = null
+
+    fun setListener(listener: WhistleDetectionListener) {
+        this.listener = listener
+    }
 
     // Convert to frequency bins for range checking
     private val minBin = (minFrequency * bufferSize / sampleRate).toInt()
     private val maxBin = (maxFrequency * bufferSize / sampleRate).toInt()
 
-    private suspend fun detectWhistle(buffer: ShortArray, readSize: Int) {
+    suspend fun detectWhistle(buffer: ShortArray, readSize: Int) {
         // Check timing first to avoid unnecessary processing
         val currentTime = System.currentTimeMillis()
         if (currentTime - lastDetectionTime < detectionCooldown) {
@@ -45,20 +57,8 @@ class WhistleDetector(
             if (whistleDetected || average > threshold) {
                 lastDetectionTime = currentTime
 
-                // Update UI on main thread
-                withContext(Dispatchers.Main) {
-                    counter++
-                    updateCounterDisplay()
-                    saveCounter()
-                    statusTextView.text = "Whistle detected!"
-                    vibrate()
-
-                    // Reset status text after a delay
-                    delay(1000)
-                    if (isRecording) {
-                        statusTextView.text = "Listening for whistles..."
-                    }
-                }
+                // Notify listener about whistle detection
+                listener?.onWhistleDetected()
             }
         }
     }
@@ -114,5 +114,9 @@ class WhistleDetector(
     fun setSensitivity(sensitivity: Int) {
         // Convert 0-100 scale to 0.1-0.9 threshold (inverted: higher sensitivity = lower threshold)
         sensitivityThreshold = 0.9f - (sensitivity / 100f * 0.8f)
+
+        // Also adjust the audio energy threshold based on sensitivity
+        // Lower threshold means more sensitive
+        threshold = 5000 - (sensitivity * 30)
     }
 }

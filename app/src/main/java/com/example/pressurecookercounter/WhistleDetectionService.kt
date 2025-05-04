@@ -1,24 +1,25 @@
 package com.example.pressurecookercounter
 
-import android.app.*
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.os.*
+import android.os.Binder
+import android.os.Build
+import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import kotlin.math.abs
 
 class WhistleDetectionService : Service() {
-    private val NOTIFICATION_ID = 1001
-    private val CHANNEL_ID = "WhistleDetectionChannel"
 
-    private var isRunning = false
-    private var whistleCount = 0
-    private var audioRecord: AudioRecord? = null
-    private var recordingJob: Job? = null
+    private val NOTIFICATION_ID = 1001
+    private val CHANNEL_ID = "whistle_detection_channel"
 
     // Audio recording parameters
     private val sampleRate = 44100
@@ -26,10 +27,13 @@ class WhistleDetectionService : Service() {
     private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
     private val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
 
-    // Whistle detection parameters
-    private var threshold = 2000
-    private var detectionCooldown = 2000L
-    private var lastDetectionTime = 0L
+    private var audioRecord: AudioRecord? = null
+    private var isRecording = false
+    private var recordingJob: Job? = null
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    private var counter = 0
+    private var whistleDetector: WhistleDetector? = null
 
     private val binder = LocalBinder()
 
@@ -37,124 +41,67 @@ class WhistleDetectionService : Service() {
         fun getService(): WhistleDetectionService = this@WhistleDetectionService
     }
 
-    override fun onBind(intent: Intent): IBinder {
+    override fun onBind(intent: Intent?): IBinder {
         return binder
-    }
-
-    override fun onCreate() {
-        super.onCreate()
-        createNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             "START_DETECTION" -> {
-                if (!isRunning) {
-                    whistleCount = intent.getIntExtra("CURRENT_COUNT", 0)
-                    threshold = intent.getIntExtra("THRESHOLD", 2000)
-                    startDetection()
+                counter = intent.getIntExtra("CURRENT_COUNT", 0)
+                val threshold = intent.getIntExtra("THRESHOLD", 2000)
+                val sensitivity = intent.getIntExtra("SENSITIVITY", 50)
+
+                // Initialize the whistle detector
+                whistleDetector = WhistleDetector(sampleRate, bufferSize).apply {
+                    setSensitivity(sensitivity)
+                    setListener(object : WhistleDetector.WhistleDetectionListener {
+                        override fun onWhistleDetected() {
+                            counter++
+                            // Broadcast the updated count to MainActivity
+                            val updateIntent = Intent("WHISTLE_COUNT_UPDATED").apply {
+                                putExtra("COUNT", counter)
+                            }
+                            sendBroadcast(updateIntent)
+                        }
+                    })
                 }
+
+                startForeground()
+                startRecording()
             }
             "STOP_DETECTION" -> {
-                stopDetection()
+                stopRecording()
+                stopForeground(true)
                 stopSelf()
             }
         }
         return START_STICKY
     }
 
-    private fun startDetection() {
-        isRunning = true
+    private fun startForeground() {
+        createNotificationChannel()
 
-        // Create and show notification
-        val notification = createNotification("Listening for whistles...", whistleCount)
-        startForeground(NOTIFICATION_ID, notification)
-
-        // Start audio recording and detection
-        audioRecord = AudioRecord(
-            MediaRecorder.AudioSource.MIC,
-            sampleRate,
-            channelConfig,
-            audioFormat,
-            bufferSize
+        val notificationIntent = Intent(this, MainActivity::class.java)
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, notificationIntent,
+            PendingIntent.FLAG_IMMUTABLE
         )
 
-        recordingJob = CoroutineScope(Dispatchers.IO).launch {
-            audioRecord?.startRecording()
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Whistle Counter Active")
+            .setContentText("Listening for whistles")
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentIntent(pendingIntent)
+            .build()
 
-            val buffer = ShortArray(bufferSize)
-            while (isRunning) {
-                val readSize = audioRecord?.read(buffer, 0, bufferSize) ?: 0
-                if (readSize > 0) {
-                    detectWhistle(buffer, readSize)
-                }
-            }
-        }
-    }
-
-    private fun stopDetection() {
-        isRunning = false
-        recordingJob?.cancel()
-        audioRecord?.stop()
-        audioRecord?.release()
-        audioRecord = null
-
-        // Save the final count
-        val sharedPrefs = getSharedPreferences("WhistleCounterPrefs", Context.MODE_PRIVATE)
-        val editor = sharedPrefs.edit()
-        editor.putInt("counter", whistleCount)
-        editor.apply()
-
-        // Broadcast the final count to update UI if app is open
-        val intent = Intent("WHISTLE_COUNT_UPDATED")
-        intent.putExtra("COUNT", whistleCount)
-        sendBroadcast(intent)
-    }
-
-    private suspend fun detectWhistle(buffer: ShortArray, readSize: Int) {
-        // Calculate audio energy
-        var sum = 0.0
-        for (i in 0 until readSize) {
-            sum += abs(buffer[i].toDouble())
-        }
-
-        val average = sum / readSize
-
-        // Check for sudden loud sounds that could be whistles
-        if (average > threshold) {
-            val currentTime = System.currentTimeMillis()
-            if (currentTime - lastDetectionTime > detectionCooldown) {
-                lastDetectionTime = currentTime
-                whistleCount++
-
-                // Update notification
-                val notification = createNotification("Whistle detected!", whistleCount)
-                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                notificationManager.notify(NOTIFICATION_ID, notification)
-
-                // Broadcast the updated count
-                val intent = Intent("WHISTLE_COUNT_UPDATED")
-                intent.putExtra("COUNT", whistleCount)
-                sendBroadcast(intent)
-
-                // Vibrate to indicate detection
-                val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-                vibrator.vibrate(VibrationEffect.createOneShot(300, VibrationEffect.DEFAULT_AMPLITUDE))
-
-                // Reset notification after a delay
-                delay(1000)
-                if (isRunning) {
-                    val updatedNotification = createNotification("Listening for whistles...", whistleCount)
-                    notificationManager.notify(NOTIFICATION_ID, updatedNotification)
-                }
-            }
-        }
+        startForeground(NOTIFICATION_ID, notification)
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val name = "Whistle Detection"
-            val descriptionText = "Detects pressure cooker whistles"
+            val name = "Whistle Detection Service"
+            val descriptionText = "Detects whistle sounds from pressure cooker"
             val importance = NotificationManager.IMPORTANCE_DEFAULT
             val channel = NotificationChannel(CHANNEL_ID, name, importance).apply {
                 description = descriptionText
@@ -164,30 +111,50 @@ class WhistleDetectionService : Service() {
         }
     }
 
-    private fun createNotification(contentText: String, count: Int): Notification {
-        val notificationIntent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE
-        )
+    private fun startRecording() {
+        if (isRecording) return
 
-        val stopIntent = Intent(this, WhistleDetectionService::class.java).apply {
-            action = "STOP_DETECTION"
+        try {
+            audioRecord = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                sampleRate,
+                channelConfig,
+                audioFormat,
+                bufferSize
+            )
+
+            if (audioRecord?.state == AudioRecord.STATE_INITIALIZED) {
+                audioRecord?.startRecording()
+                isRecording = true
+
+                recordingJob = serviceScope.launch {
+                    val buffer = ShortArray(bufferSize)
+                    while (isRecording) {
+                        val readSize = audioRecord?.read(buffer, 0, bufferSize) ?: 0
+                        if (readSize > 0) {
+                            whistleDetector?.detectWhistle(buffer, readSize)
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
-        val stopPendingIntent = PendingIntent.getService(
-            this, 1, stopIntent, PendingIntent.FLAG_IMMUTABLE
-        )
+    }
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Whistle Counter: $count")
-            .setContentText(contentText)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentIntent(pendingIntent)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPendingIntent)
-            .build()
+    private fun stopRecording() {
+        isRecording = false
+        recordingJob?.cancel()
+        recordingJob = null
+
+        audioRecord?.stop()
+        audioRecord?.release()
+        audioRecord = null
     }
 
     override fun onDestroy() {
-        stopDetection()
+        stopRecording()
+        serviceScope.cancel()
         super.onDestroy()
     }
 }
