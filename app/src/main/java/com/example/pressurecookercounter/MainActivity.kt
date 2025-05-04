@@ -12,6 +12,10 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import kotlin.math.abs
 import android.util.Log
+import be.tarsos.dsp.*
+import be.tarsos.dsp.io.android.AudioDispatcherFactory
+import be.tarsos.dsp.pitch.PitchDetectionHandler
+import be.tarsos.dsp.pitch.PitchProcessor
 
 
 class MainActivity : AppCompatActivity() {
@@ -25,7 +29,9 @@ class MainActivity : AppCompatActivity() {
     private var isRecording = false
     private var audioThread: Thread? = null
     private var lastWhistleTime = 0L
+    private var isWhistleActive = false
 
+    private val WHISTLE_DURATION_MS = 3000L
     private val SAMPLE_RATE = 44100
     private val THRESHOLD = 30000 // Adjust after testing
     private val MIN_GAP_MS = 3000L
@@ -99,12 +105,20 @@ class MainActivity : AppCompatActivity() {
 
     private fun checkWhistle(amplitude: Int) {
         val now = System.currentTimeMillis()
-        if (amplitude > THRESHOLD && now - lastWhistleTime > MIN_GAP_MS) {
+
+        if (amplitude > THRESHOLD && !isWhistleActive) {
+            isWhistleActive = true
             lastWhistleTime = now
             whistleCount++
             runOnUiThread { updateUI() }
+
+            // reset flag after fixed duration
+            Handler(Looper.getMainLooper()).postDelayed({
+                isWhistleActive = false
+            }, WHISTLE_DURATION_MS)
         }
     }
+
 
     private fun updateUI() {
         countText.text = "Whistles: $whistleCount"
